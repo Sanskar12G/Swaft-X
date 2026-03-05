@@ -1,7 +1,6 @@
-<<<<<<< HEAD
-=======
+
 # Swaft-X
->>>>>>> 2e14e903087f2e419fb4270de9122f4e5409aba0
+
 # <div align="center">🚗 swaft X Rides - Open-Source Ride Intelligence Platform</div>
 
 <div align="center">
