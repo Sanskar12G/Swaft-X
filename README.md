@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+# Swaft-X
+>>>>>>> 2e14e903087f2e419fb4270de9122f4e5409aba0
 # <div align="center">🚗 swaft X Rides - Open-Source Ride Intelligence Platform</div>
 
 <div align="center">
@@ -2342,4 +2346,8 @@ This project is **free to use, modify, and distribute**.
 
 ![Footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20,24,12&height=150&section=footer)
 
+<<<<<<< HEAD
 </div>
+=======
+</div>
+>>>>>>> 2e14e903087f2e419fb4270de9122f4e5409aba0
