@@ -3,6 +3,8 @@ import HeroSection from "../components/HeroSection";
 import FareComparison from "../components/FareComparision";
 import FeaturesSection from "../components/FeaturesSection";
 import CitiesSection from "../components/CitiesSection";
+import CtaSection from "../components/CtaSection";
+import  Footer  from "../components/Footer";
 
 
 const Index = () => {
@@ -13,6 +15,8 @@ const Index = () => {
       <FareComparison/>
       <FeaturesSection/>
       <CitiesSection/>
+      <CtaSection/>
+      <Footer/>
     </div>
   );
 };
