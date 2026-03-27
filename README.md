@@ -216,10 +216,4 @@ Use these directly in your slides:
 - Driver module currently removed from active navigation flow.
 - Optimized for responsive usage with modern UI interactions.
 
----
 
-If you want, I can also generate a separate `PPT_CONTENT.md` with:
-- 10-slide structure,
-- speaker notes,
-- one-line pitch per slide,
-- and demo script for viva/presentation.
