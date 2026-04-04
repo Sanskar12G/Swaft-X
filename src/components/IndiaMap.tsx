@@ -71,37 +71,7 @@ const FARE_RATES = {
   surgeFactor: 1.0,
 };
 
-interface RoutingApiRoute {
-  coordinates: [number, number][];
-  distanceMeters: number;
-  durationSeconds: number;
-}
-
-interface OrsFeature {
-  geometry: {
-    coordinates: [number, number][];
-  };
-  properties: {
-    summary: {
-      distance: number;
-      duration: number;
-    };
-  };
-}
-
-interface OsrmRoute {
-  geometry: {
-    coordinates: [number, number][];
-  };
-  distance: number;
-  duration: number;
-}
-
-const simulateTraffic = (
-  coordinates: [number, number][],
-  distanceKm: number,
-  baseDurationMin: number
-): Omit<RouteData, 'coordinates' | 'distance' | 'fare'> => {
+const simulateTraffic = (coordinates: [number, number][], distanceKm: number): Omit<RouteData, 'coordinates' | 'distance' | 'fare'> => {
   const hour = new Date().getHours();
   const isPeakHour = (hour >= 8 && hour <= 10) || (hour >= 17 && hour <= 20) || (hour >= 12 && hour <= 14);
   
@@ -111,7 +81,10 @@ const simulateTraffic = (
   
   const trafficLevel: 'low' | 'moderate' | 'heavy' = isPeakHour ? 'heavy' : (distanceKm > 5 ? 'moderate' : 'low');
   
-  const duration = Math.max(1, Math.round(baseDurationMin));
+  const trafficDelayMin = trafficLevel === 'heavy' ? distanceKm * 1.5 : trafficLevel === 'moderate' ? distanceKm * 0.7 : distanceKm * 0.2;
+  const signalDelayMin = redSignals * 1.2;
+  const baseDuration = distanceKm * 2.5;
+  const duration = Math.round(baseDuration + trafficDelayMin + signalDelayMin);
   
   const congestionPoints: { lat: number; lng: number; level: 'moderate' | 'heavy' }[] = [];
   const step = Math.max(1, Math.floor(coordinates.length / (isPeakHour ? 4 : 6)));
@@ -128,116 +101,31 @@ const simulateTraffic = (
   return { duration, trafficLevel, trafficSignals: totalSignals, redSignals, congestionPoints };
 };
 
-const generateAlternativeRoute = (
-  coordinates: [number, number][],
-  distanceKm: number,
-  durationMin: number
-): RouteData => {
-  const offset = 0.005 + Math.random() * 0.008;
-  const direction = Math.random() > 0.5 ? 1 : -1;
-  
-  const altCoords: [number, number][] = coordinates.map((coord, i) => {
-    const progress = i / coordinates.length;
-    const bulge = Math.sin(progress * Math.PI);
-    return [
-      coord[0] + offset * bulge * direction,
-      coord[1] + offset * bulge * direction * 0.7,
-    ];
-  });
-  
-  const altDistance = Math.round((distanceKm * (1.05 + Math.random() * 0.15)) * 10) / 10;
-  const traffic = simulateTraffic(altCoords, altDistance, Math.round(durationMin * 1.1));
-  
-  const betterTraffic = {
-    ...traffic,
-    trafficLevel: 'low' as const,
-    redSignals: Math.max(0, traffic.redSignals - Math.floor(traffic.redSignals * 0.6)),
-    duration: Math.round(traffic.duration * 0.65),
-    congestionPoints: traffic.congestionPoints.slice(0, 1),
-  };
-  
-  const fare = Math.round(
-    FARE_RATES.baseFare + (altDistance * FARE_RATES.perKm) + (betterTraffic.duration * FARE_RATES.perMinute)
-  );
-  
-  return { coordinates: altCoords, distance: altDistance, fare, ...betterTraffic };
-};
+const buildRouteData = (route: any): RouteData | null => {
+  if (!route?.geometry?.coordinates?.length) return null;
 
-const toRouteData = (route: RoutingApiRoute): RouteData => {
-  const distanceKm = Math.round((route.distanceMeters / 1000) * 10) / 10;
-  const durationMin = Math.max(1, Math.round(route.durationSeconds / 60));
-  const traffic = simulateTraffic(route.coordinates, distanceKm, durationMin);
+  const coordinates: [number, number][] = route.geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]]);
+  const distanceKm = Math.round((route.distance / 1000) * 10) / 10;
+
+  // Use routing-engine duration as baseline, then layer simulated signal/traffic behavior
+  const baseDurationMinutes = Math.max(1, Math.round(route.duration / 60));
+  const traffic = simulateTraffic(coordinates, distanceKm);
+  const normalizedDuration = Math.max(baseDurationMinutes, traffic.duration);
+
   const fare = Math.round(
-    FARE_RATES.baseFare + (distanceKm * FARE_RATES.perKm) + (traffic.duration * FARE_RATES.perMinute)
+    FARE_RATES.baseFare + (distanceKm * FARE_RATES.perKm) + (normalizedDuration * FARE_RATES.perMinute)
   );
 
   return {
-    coordinates: route.coordinates,
+    coordinates,
     distance: distanceKm,
-    duration: traffic.duration,
+    duration: normalizedDuration,
     fare,
     trafficLevel: traffic.trafficLevel,
     trafficSignals: traffic.trafficSignals,
     redSignals: traffic.redSignals,
     congestionPoints: traffic.congestionPoints,
   };
-};
-
-const fetchRoutes = async (pickup: Location, dropoff: Location): Promise<RoutingApiRoute[]> => {
-  const orsApiKey = import.meta.env.VITE_ORS_API_KEY;
-
-  if (orsApiKey) {
-    const orsResponse = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: {
-        Authorization: orsApiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        coordinates: [
-          [pickup.lng, pickup.lat],
-          [dropoff.lng, dropoff.lat],
-        ],
-        alternative_routes: {
-          target_count: 2,
-          weight_factor: 1.6,
-          share_factor: 0.6,
-        },
-      }),
-    });
-
-    if (orsResponse.ok) {
-      const orsData = await orsResponse.json() as { features?: OrsFeature[] };
-      const orsRoutes: RoutingApiRoute[] = (orsData.features || []).map((feature) => ({
-        coordinates: feature.geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]] as [number, number]),
-        distanceMeters: feature.properties.summary.distance,
-        durationSeconds: feature.properties.summary.duration,
-      }));
-      if (orsRoutes.length > 0) {
-        return orsRoutes;
-      }
-    }
-  }
-
-  const osrmResponse = await fetch(
-    `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson&alternatives=true`
-  );
-  if (!osrmResponse.ok) {
-    throw new Error('Failed to fetch route from OSRM');
-  }
-  const osrmData = await osrmResponse.json() as { routes?: OsrmRoute[] };
-
-  const osrmRoutes: RoutingApiRoute[] = (osrmData.routes || []).map((route) => ({
-    coordinates: route.geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]] as [number, number]),
-    distanceMeters: route.distance,
-    durationSeconds: route.duration,
-  }));
-
-  if (osrmRoutes.length === 0) {
-    throw new Error('No routes returned by routing APIs');
-  }
-
-  return osrmRoutes;
 };
 
 const IndiaMap = ({ 
@@ -259,8 +147,21 @@ const IndiaMap = ({
   const altRouteLine = useRef<L.Polyline | null>(null);
   const trafficMarkers = useRef<L.Marker[]>([]);
   const congestionCircles = useRef<L.Circle[]>([]);
+  
   const mainRouteRef = useRef<RouteData | null>(null);
   const altRouteRef = useRef<RouteData | null>(null);
+  const selectModeRef = useRef<IndiaMapProps['selectMode']>(selectMode);
+  const pickupChangeRef = useRef(onPickupChange);
+  const dropoffChangeRef = useRef(onDropoffChange);
+
+  useEffect(() => {
+    selectModeRef.current = selectMode;
+  }, [selectMode]);
+
+  useEffect(() => {
+    pickupChangeRef.current = onPickupChange;
+    dropoffChangeRef.current = onDropoffChange;
+  }, [onPickupChange, onDropoffChange]);
 
   const clearRouteVisuals = () => {
     routeLine.current?.remove();
@@ -320,13 +221,16 @@ const IndiaMap = ({
 
     L.control.zoom({ position: 'bottomright' }).addTo(map.current);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 20
+    L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+      attribution: '&copy; Google Maps',
+      maxZoom: 20,
     }).addTo(map.current);
 
     map.current.on('click', async (e: L.LeafletMouseEvent) => {
       const { lat, lng } = e.latlng;
+      const currentMode = selectModeRef.current;
+      if (!currentMode) return;
+
       try {
         const response = await fetch(
           `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`
@@ -334,12 +238,12 @@ const IndiaMap = ({
         const data = await response.json();
         const address = data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
         const location = { lat, lng, address };
-        if (selectMode === 'pickup' && onPickupChange) onPickupChange(location);
-        else if (selectMode === 'dropoff' && onDropoffChange) onDropoffChange(location);
+        if (currentMode === 'pickup') pickupChangeRef.current?.(location);
+        else if (currentMode === 'dropoff') dropoffChangeRef.current?.(location);
       } catch {
         const location = { lat, lng, address: `${lat.toFixed(4)}, ${lng.toFixed(4)}` };
-        if (selectMode === 'pickup' && onPickupChange) onPickupChange(location);
-        else if (selectMode === 'dropoff' && onDropoffChange) onDropoffChange(location);
+        if (currentMode === 'pickup') pickupChangeRef.current?.(location);
+        else if (currentMode === 'dropoff') dropoffChangeRef.current?.(location);
       }
     });
 
@@ -387,11 +291,19 @@ const IndiaMap = ({
 
     const calculateRoute = async () => {
       try {
-        const routes = await fetchRoutes(pickup, dropoff);
-        if (routes.length > 0) {
+        const response = await fetch(
+          `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson&alternatives=true`
+        );
+        const data = await response.json();
+
+        if (data.routes && data.routes.length > 0) {
           clearRouteVisuals();
 
-          const mainRouteData = toRouteData(routes[0]);
+          const mainRouteData = buildRouteData(data.routes[0]);
+          if (!mainRouteData) {
+            return;
+          }
+
           mainRouteRef.current = mainRouteData;
 
           const mainColor = mainRouteData.trafficLevel === 'heavy' ? '#ef4444' : mainRouteData.trafficLevel === 'moderate' ? '#f59e0b' : '#00e5ff';
@@ -414,19 +326,20 @@ const IndiaMap = ({
 
           drawTrafficOnMap(mainRouteData);
 
-          const altRouteData = routes[1]
-            ? toRouteData(routes[1])
-            : generateAlternativeRoute(mainRouteData.coordinates, mainRouteData.distance, mainRouteData.duration);
+          const rawAltRoute = data.routes[1];
+          const altRouteData = buildRouteData(rawAltRoute) ?? mainRouteData;
           altRouteRef.current = altRouteData;
 
-          altRouteLine.current = L.polyline(altRouteData.coordinates, {
-            color: '#22c55e',
-            weight: 4,
-            opacity: 0.7,
-            lineCap: 'round',
-            lineJoin: 'round',
-            dashArray: '12, 8',
-          }).addTo(map.current!);
+          if (rawAltRoute && altRouteData !== mainRouteData) {
+            altRouteLine.current = L.polyline(altRouteData.coordinates, {
+              color: '#22c55e',
+              weight: 4,
+              opacity: 0.7,
+              lineCap: 'round',
+              lineJoin: 'round',
+              dashArray: '12, 8',
+            }).addTo(map.current!);
+          }
 
           map.current!.fitBounds(routeLine.current.getBounds(), { padding: [60, 60] });
 
@@ -436,22 +349,18 @@ const IndiaMap = ({
       } catch (error) {
         console.error('Error calculating route:', error);
         clearRouteVisuals();
-        
+        mainRouteRef.current = null;
+        altRouteRef.current = null;
+
         const R = 6371;
         const dLat = (dropoff.lat - pickup.lat) * Math.PI / 180;
         const dLon = (dropoff.lng - pickup.lng) * Math.PI / 180;
         const a = Math.sin(dLat/2)**2 + Math.cos(pickup.lat * Math.PI / 180) * Math.cos(dropoff.lat * Math.PI / 180) * Math.sin(dLon/2)**2;
-        const distanceKm = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) * 10) / 10;
+        const distanceKm = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) * 1.2 * 10) / 10;
         const duration = Math.round(distanceKm * 3);
         const fare = Math.round(FARE_RATES.baseFare + (distanceKm * FARE_RATES.perKm) + (duration * FARE_RATES.perMinute));
 
-        routeLine.current = L.polyline(
-          [[pickup.lat, pickup.lng], [dropoff.lat, dropoff.lng]],
-          { color: '#f59e0b', weight: 4, opacity: 0.8, dashArray: '10, 10' }
-        ).addTo(map.current!);
-
-        const mainRouteData: RouteData = { coordinates: [[pickup.lat, pickup.lng], [dropoff.lat, dropoff.lng]], distance: distanceKm, duration, fare, trafficLevel: 'moderate', trafficSignals: 3, redSignals: 2, congestionPoints: [] };
-        mainRouteRef.current = mainRouteData;
+        // Keep fare/time estimate but avoid drawing synthetic non-road paths
         onRouteCalculated?.(distanceKm, duration, fare);
       }
     };
@@ -463,21 +372,23 @@ const IndiaMap = ({
   useEffect(() => {
     if (!map.current) return;
     
-    if (selectedRoute === 'main') {
+    if (selectedRoute === 'main' || !altRouteLine.current || !altRouteRef.current) {
       routeLine.current?.setStyle({ opacity: 0.9, weight: 5 });
       glowLine.current?.setStyle({ opacity: 0.2 });
       altRouteLine.current?.setStyle({ opacity: 0.4, weight: 3 });
-      if (mainRouteRef.current) drawTrafficOnMap(mainRouteRef.current);
-    } else {
-      routeLine.current?.setStyle({ opacity: 0.4, weight: 3 });
-      glowLine.current?.setStyle({ opacity: 0.1 });
-      altRouteLine.current?.setStyle({ opacity: 0.9, weight: 5 });
-      if (altRouteRef.current) drawTrafficOnMap(altRouteRef.current);
+      if (mainRouteRef.current) {
+        drawTrafficOnMap(mainRouteRef.current);
+        onRouteCalculated?.(mainRouteRef.current.distance, mainRouteRef.current.duration, mainRouteRef.current.fare);
+      }
+      return;
     }
-    
-    const info = selectedRoute === 'main' ? mainRouteRef.current : altRouteRef.current;
-    if (info) onRouteCalculated?.(info.distance, info.duration, info.fare);
-  }, [selectedRoute]);
+
+    routeLine.current?.setStyle({ opacity: 0.4, weight: 3 });
+    glowLine.current?.setStyle({ opacity: 0.1 });
+    altRouteLine.current?.setStyle({ opacity: 0.9, weight: 5 });
+    drawTrafficOnMap(altRouteRef.current);
+    onRouteCalculated?.(altRouteRef.current.distance, altRouteRef.current.duration, altRouteRef.current.fare);
+  }, [selectedRoute, onRouteCalculated]);
 
   return (
     <div className="relative w-full h-full">

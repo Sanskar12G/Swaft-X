@@ -27,6 +27,35 @@ interface LocationSuggestion {
 }
 
 const suggestionCache = new Map<string, LocationSuggestion[]>();
+const BLOCKED_ROAD_TERMS = ["nh45", "nh 45", "nh-45", "highway", "national highway", "airport road", "dumna airport road"];
+const JABALPUR_VIEWBOX = "79.82,23.28,80.10,23.05";
+
+const resolveAccurateLocation = async (location: LocationSuggestion): Promise<LocationSuggestion> => {
+  try {
+    const query = location.fullAddress || `${location.name}, Jabalpur, MP`;
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&bounded=1&viewbox=${JABALPUR_VIEWBOX}&q=${encodeURIComponent(query)}`
+    );
+    if (!response.ok) return location;
+
+    const data = await response.json() as Array<{ lat: string; lon: string; display_name?: string }>;
+    const best = data[0];
+    if (!best) return location;
+
+    const lat = Number(best.lat);
+    const lng = Number(best.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return location;
+
+    return {
+      ...location,
+      lat,
+      lng,
+      fullAddress: best.display_name || location.fullAddress,
+    };
+  } catch {
+    return location;
+  }
+};
 
 const searchLiveLocations = async (query: string): Promise<LocationSuggestion[]> => {
   const trimmed = query.trim();
@@ -48,6 +77,8 @@ const searchLiveLocations = async (query: string): Promise<LocationSuggestion[]>
       display_name: string;
       name?: string;
       address?: Record<string, string | undefined>;
+      class?: string;
+      type?: string;
     }>;
 
     const suggestions = data.map((item) => {
@@ -65,6 +96,9 @@ const searchLiveLocations = async (query: string): Promise<LocationSuggestion[]>
         lng: Number(item.lon),
         fullAddress: item.display_name,
       };
+    }).filter((item) => {
+      const haystack = `${item.name} ${item.fullAddress}`.toLowerCase();
+      return !BLOCKED_ROAD_TERMS.some((term) => haystack.includes(term));
     });
 
     suggestionCache.set(cacheKey, suggestions);
@@ -208,24 +242,28 @@ const BookingPanel = ({ onBack }: BookingPanelProps) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleSelectPickupSuggestion = (location: LocationSuggestion) => {
+  const handleSelectPickupSuggestion = async (location: LocationSuggestion) => {
     setPickupText(location.fullAddress);
-    setPickup({
-      lat: location.lat,
-      lng: location.lng,
-      address: location.fullAddress,
-    });
     setShowPickupSuggestions(false);
+    const accurate = await resolveAccurateLocation(location);
+    setPickup({
+      lat: accurate.lat,
+      lng: accurate.lng,
+      address: accurate.fullAddress,
+    });
+    setPickupText(accurate.fullAddress);
   };
 
-  const handleSelectDropoffSuggestion = (location: LocationSuggestion) => {
+  const handleSelectDropoffSuggestion = async (location: LocationSuggestion) => {
     setDropoffText(location.fullAddress);
-    setDropoff({
-      lat: location.lat,
-      lng: location.lng,
-      address: location.fullAddress,
-    });
     setShowDropoffSuggestions(false);
+    const accurate = await resolveAccurateLocation(location);
+    setDropoff({
+      lat: accurate.lat,
+      lng: accurate.lng,
+      address: accurate.fullAddress,
+    });
+    setDropoffText(accurate.fullAddress);
   };
 
   const handlePickupChange = (location: Location | null) => {
